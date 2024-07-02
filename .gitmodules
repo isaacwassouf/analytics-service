@@ -1,0 +1,3 @@
+[submodule "protobufs/analytics_service"]
+	path = protobufs/analytics_service
+	url = git@github.com:isaacwassouf/analytics-service-protobufs.git
