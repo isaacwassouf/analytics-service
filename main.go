@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net"
 
+	sq "github.com/Masterminds/squirrel"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	db "github.com/isaacwassouf/analytics-service/database"
 	pb "github.com/isaacwassouf/analytics-service/protobufs/analytics_service"
@@ -18,7 +23,63 @@ type AnalyticsService struct {
 }
 
 func (s *AnalyticsService) Log(ctx context.Context, in *pb.LogRequest) (*pb.LogResponse, error) {
-	return &pb.LogResponse{Message: "Logged"}, nil
+	_, err := sq.Insert("logs").
+		Columns("service", "level", "message", "metadata").
+		Values(in.LogEntry.ServiceName, in.LogEntry.Level, in.LogEntry.ResponseMessage, in.LogEntry.Metadata).
+		RunWith(s.analyticsServiceDB.Db).
+		Exec()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	return &pb.LogResponse{Message: "Log entry added successfully"}, nil
+}
+
+func (s *AnalyticsService) ListLogs(ctx context.Context, in *emptypb.Empty) (*pb.ListLogsResponse, error) {
+	rows, err := sq.Select("service", "level", "message", "metadata", "created_at").
+		From("logs").
+		RunWith(s.analyticsServiceDB.Db).
+		Query()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	defer rows.Close()
+
+	var logs []*pb.LogEntry
+	for rows.Next() {
+		var service, level string
+		var createdAt string
+		var message sql.NullString
+		var metadata interface{}
+
+		err := rows.Scan(&service, &level, &message, &metadata, &createdAt)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+
+		// convert the metadata to bypes and then to string
+		metadataBytes, ok := metadata.([]byte)
+		if !ok {
+			return nil, status.Error(codes.Internal, "failed to convert metadata to bytes")
+		}
+		metadata = string(metadataBytes)
+
+		// convert the created string to a proto timestamp
+		createdTime, err := utils.StringToProtoTimestamp(createdAt)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+
+		logs = append(logs, &pb.LogEntry{
+			ServiceName:     service,
+			Level:           level,
+			ResponseMessage: message.String,
+			Metadata:        metadata.(string),
+			Timestamp:       createdTime,
+		})
+	}
+
+	return &pb.ListLogsResponse{Logs: logs}, nil
 }
 
 func main() {
