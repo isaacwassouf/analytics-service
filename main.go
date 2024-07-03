@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"net"
 
@@ -38,11 +39,12 @@ func (s *AnalyticsService) Log(ctx context.Context, in *pb.LogRequest) (*pb.LogR
 func (s *AnalyticsService) ListLogs(ctx context.Context, in *emptypb.Empty) (*pb.ListLogsResponse, error) {
 	rows, err := sq.Select("service", "level", "message", "metadata", "created_at").
 		From("logs").
-		RunWith(s.analyticsServiceDB.Db).
-		Query()
+		OrderBy("created_at DESC").
+		RunWith(s.analyticsServiceDB.Db).Query()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+
 	defer rows.Close()
 
 	var logs []*pb.LogEntry
