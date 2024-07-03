@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"log"
 	"net"
 
@@ -11,7 +10,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	db "github.com/isaacwassouf/analytics-service/database"
 	pb "github.com/isaacwassouf/analytics-service/protobufs/analytics_service"
@@ -36,11 +34,32 @@ func (s *AnalyticsService) Log(ctx context.Context, in *pb.LogRequest) (*pb.LogR
 	return &pb.LogResponse{Message: "Log entry added successfully"}, nil
 }
 
-func (s *AnalyticsService) ListLogs(ctx context.Context, in *emptypb.Empty) (*pb.ListLogsResponse, error) {
-	rows, err := sq.Select("service", "level", "message", "metadata", "created_at").
+func (s *AnalyticsService) ListLogs(ctx context.Context, in *pb.ListLogsRequest) (*pb.ListLogsResponse, error) {
+	query := sq.Select("service", "level", "message", "metadata", "created_at").
 		From("logs").
-		OrderBy("created_at DESC").
-		RunWith(s.analyticsServiceDB.Db).Query()
+		OrderBy("created_at DESC")
+
+	if in.Window == pb.Window_YESTERDAY {
+		query = query.Where("created_at >= (CURRENT_DATE - INTERVAL 1 DAY) AND created_at < CURRENT_DATE")
+	}
+
+	if in.Window == pb.Window_TODAY {
+		query = query.Where("created_at >= CURRENT_DATE")
+	}
+
+	if in.Window == pb.Window_LAST_WEEK {
+		query = query.Where("created_at >= NOW() - INTERVAL 1 WEEK")
+	}
+
+	if in.Window == pb.Window_LAST_MONTH {
+		query = query.Where("created_at >= NOW() - INTERVAL 1 MONTH")
+	}
+
+	if in.Window == pb.Window_LAST_THREE_MONTHS {
+		query = query.Where("created_at >= NOW() - INTERVAL 3 MONTH")
+	}
+
+	rows, err := query.RunWith(s.analyticsServiceDB.Db).Query()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
