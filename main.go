@@ -66,18 +66,12 @@ func (s *AnalyticsService) ListLogs(ctx context.Context, in *emptypb.Empty) (*pb
 		}
 		metadata = string(metadataBytes)
 
-		// convert the created string to a proto timestamp
-		createdTime, err := utils.StringToProtoTimestamp(createdAt)
-		if err != nil {
-			return nil, status.Error(codes.Internal, err.Error())
-		}
-
 		logs = append(logs, &pb.LogEntry{
 			ServiceName:     service,
 			Level:           level,
 			ResponseMessage: message.String,
 			Metadata:        metadata.(string),
-			Timestamp:       createdTime,
+			CreatedAt:       createdAt,
 		})
 	}
 
