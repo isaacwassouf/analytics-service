@@ -9,10 +9,18 @@ import (
 )
 
 func LoadEnvVarsFromFile() error {
-	err := godotenv.Load()
-	if err != nil {
-		return err
+	// get the runnig environment
+	environment := GetEnvVar("GO_ENV", "development")
+
+	// if it's development load the .env file
+	if environment == "development" {
+		err := godotenv.Load()
+		if err != nil {
+			return err
+		}
+		return nil
 	}
+
 	return nil
 }
 
