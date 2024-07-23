@@ -5,9 +5,23 @@ services:
       - "8089:8089"
     environment:
       GO_ENV: "production"
-      MYSQL_HOST: ${MYSQL_HOST}
-      MYSQL_PORT: ${MYSQL_PORT}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MONGODB_HOST: ${MONGODB_HOST}
+      MONGODB_PASSWORD: ${MONGODB_PASSWORD}
+      MONGODB_USER: ${MONGODB_USER}
+      MONGODB_PORT: ${MONGODB_PORT}
+      MONGODB_DB: ${MONGODB_DB}
     network_mode: "host"
+
+  mongo:
+    image: mongo
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mongo-data:

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
-	"database/sql"
+	"encoding/json"
 	"log"
 	"net"
+	"time"
 
-	sq "github.com/Masterminds/squirrel"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,11 +24,21 @@ type AnalyticsService struct {
 }
 
 func (s *AnalyticsService) Log(ctx context.Context, in *pb.LogRequest) (*pb.LogResponse, error) {
-	_, err := sq.Insert("logs").
-		Columns("service", "level", "message", "metadata").
-		Values(in.LogEntry.ServiceName, in.LogEntry.Level, in.LogEntry.ResponseMessage, in.LogEntry.Metadata).
-		RunWith(s.analyticsServiceDB.Db).
-		Exec()
+	// parse the metadata into a map
+	var metadata map[string]interface{}
+	err := json.Unmarshal([]byte(in.LogEntry.Metadata), &metadata)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "failed to parse metadata")
+	}
+
+	collection := s.analyticsServiceDB.Db.Collection("logs")
+	_, err = collection.InsertOne(ctx, bson.M{
+		"service":    in.LogEntry.ServiceName,
+		"level":      in.LogEntry.Level,
+		"message":    in.LogEntry.ResponseMessage,
+		"metadata":   metadata,
+		"created_at": time.Now(),
+	})
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -35,63 +47,71 @@ func (s *AnalyticsService) Log(ctx context.Context, in *pb.LogRequest) (*pb.LogR
 }
 
 func (s *AnalyticsService) ListLogs(ctx context.Context, in *pb.ListLogsRequest) (*pb.ListLogsResponse, error) {
-	query := sq.Select("service", "level", "message", "metadata", "created_at").
-		From("logs").
-		OrderBy("created_at DESC")
+	collection := s.analyticsServiceDB.Db.Collection("logs")
+	filter := bson.M{}
+	now := time.Now()
 
-	if in.Window == pb.Window_YESTERDAY {
-		query = query.Where("created_at >= (CURRENT_DATE - INTERVAL 1 DAY) AND created_at < CURRENT_DATE")
+	switch in.Window {
+	case pb.Window_YESTERDAY:
+		filter["created_at"] = bson.M{
+			"$gte": now.AddDate(0, 0, -1).Truncate(24 * time.Hour),
+			"$lt":  now.Truncate(24 * time.Hour),
+		}
+	case pb.Window_TODAY:
+		filter["created_at"] = bson.M{
+			"$gte": now.Truncate(24 * time.Hour),
+		}
+	case pb.Window_LAST_WEEK:
+		filter["created_at"] = bson.M{
+			"$gte": now.AddDate(0, 0, -7),
+		}
+	case pb.Window_LAST_MONTH:
+		filter["created_at"] = bson.M{
+			"$gte": now.AddDate(0, -1, 0),
+		}
+	case pb.Window_LAST_THREE_MONTHS:
+		filter["created_at"] = bson.M{
+			"$gte": now.AddDate(0, -3, 0),
+		}
 	}
 
-	if in.Window == pb.Window_TODAY {
-		query = query.Where("created_at >= CURRENT_DATE")
-	}
-
-	if in.Window == pb.Window_LAST_WEEK {
-		query = query.Where("created_at >= NOW() - INTERVAL 1 WEEK")
-	}
-
-	if in.Window == pb.Window_LAST_MONTH {
-		query = query.Where("created_at >= NOW() - INTERVAL 1 MONTH")
-	}
-
-	if in.Window == pb.Window_LAST_THREE_MONTHS {
-		query = query.Where("created_at >= NOW() - INTERVAL 3 MONTH")
-	}
-
-	rows, err := query.RunWith(s.analyticsServiceDB.Db).Query()
+	cursor, err := collection.Find(ctx, filter, options.Find().SetSort(bson.M{"created_at": -1}))
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-
-	defer rows.Close()
+	defer cursor.Close(ctx)
 
 	var logs []*pb.LogEntry
-	for rows.Next() {
-		var service, level string
-		var createdAt string
-		var message sql.NullString
-		var metadata interface{}
-
-		err := rows.Scan(&service, &level, &message, &metadata, &createdAt)
+	// define a struct to hold the database log details
+	var logDetails struct {
+		Service   string                 `bson:"service"`
+		Level     string                 `bson:"level"`
+		Message   string                 `bson:"message"`
+		Metadata  map[string]interface{} `bson:"metadata"`
+		CreatedAt time.Time              `bson:"created_at"`
+	}
+	for cursor.Next(ctx) {
+		err := cursor.Decode(&logDetails)
 		if err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 
-		// convert the metadata to bypes and then to string
-		metadataBytes, ok := metadata.([]byte)
-		if !ok {
-			return nil, status.Error(codes.Internal, "failed to convert metadata to bytes")
+		metadataBytes, err := json.Marshal(logDetails.Metadata)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "failed to marshal metadata")
 		}
-		metadata = string(metadataBytes)
 
 		logs = append(logs, &pb.LogEntry{
-			ServiceName:     service,
-			Level:           level,
-			ResponseMessage: message.String,
-			Metadata:        metadata.(string),
-			CreatedAt:       createdAt,
+			ServiceName:     logDetails.Service,
+			Level:           logDetails.Level,
+			ResponseMessage: logDetails.Message,
+			Metadata:        string(metadataBytes),
+			CreatedAt:       logDetails.CreatedAt.Format(time.RFC3339),
 		})
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	return &pb.ListLogsResponse{Logs: logs}, nil
@@ -109,7 +129,7 @@ func main() {
 		log.Fatalf("failed to create a new SchemaManagementServiceDB: %v", err)
 	}
 	// ping the database
-	err = analyticsServiceDB.Db.Ping()
+	err = analyticsServiceDB.Db.Client().Ping(context.Background(), nil)
 	if err != nil {
 		log.Fatalf("failed to ping the database: %v", err)
 	}
